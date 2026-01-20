@@ -1,37 +1,33 @@
+import streamlit as st
 import torch
 import torch.nn.functional as F
 from torchvision import models, transforms
 from PIL import Image
 import requests
-import streamlit as st
-import ssl
+import pandas as pd
 
-ssl._create_default_https_context = ssl._create_unverified_context
-# -----------------------
-# Step 1: Import Libraries
-# -----------------------
+st.set_page_config(
+    page_title="Real-Time Image Classification",
+    layout="centered"
+)
 
-st.title("Real-Time Image Classification (ResNet-18)")
-st.write("Upload or capture an image and classify using a pretrained ResNet-18 model.")
+st.title("Real-Time Webcam Image Classification")
+st.write("Using **ResNet-18 pretrained on ImageNet**")
 
-# -----------------------
-# Step 2: Load ImageNet Labels
-# -----------------------
+@st.cache_data
+def load_labels():
+    url = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
+    labels = requests.get(url).text.splitlines()
+    return labels
 
-LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
-response = requests.get(LABELS_URL, verify=False)
-imagenet_classes = response.text.splitlines()
+@st.cache_resource
+def load_model():
+    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+    model.eval()
+    return model
 
-# -----------------------
-# Step 3: Load Pretrained Model
-# -----------------------
-
-model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-model.eval()  # set to eval mode
-
-# -----------------------
-# Step 4: Define Preprocessing
-# -----------------------
+labels = load_labels()
+model = load_model()
 
 preprocess = transforms.Compose([
     transforms.Resize(256),
@@ -39,43 +35,37 @@ preprocess = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    ),
+        std=[0.229, 0.224, 0.225]
+    )
 ])
 
-# -----------------------
-# Step 5: Capture or Upload Image
-# -----------------------
+st.subheader("Capture Image from Webcam")
+img_data = st.camera_input("Take a photo")
 
-img_file = st.camera_input("Capture an Image")  # webcam input
+if img_data is not None:
+    image = Image.open(img_data).convert("RGB")
+    st.image(image, caption="Captured Image", use_container_width=True)
 
-if img_file is None:
-    img_file = st.file_uploader("Or upload an image", type=["jpg", "jpeg", "png"])
+    input_tensor = preprocess(image)
+    input_batch = input_tensor.unsqueeze(0)
 
-if img_file is not None:
-    image = Image.open(img_file)
-    st.image(image, caption="Input Image", use_column_width=True)
-
-    # Preprocess
-    img_tensor = preprocess(image)
-    batch_tensor = img_tensor.unsqueeze(0)  # add batch size
-
-    # -----------------------
-    # Step 6: Run Prediction
-    # -----------------------
     with torch.no_grad():
-        outputs = model(batch_tensor)
-        probabilities = F.softmax(outputs[0], dim=0)
+        outputs = model(input_batch)
+        probs = F.softmax(outputs[0], dim=0)
 
-    # Top-5 Predictions
-    top5_prob, top5_idx = torch.topk(probabilities, 5)
+    top5_prob, top5_catid = torch.topk(probs, 5)
 
-    st.subheader("Top-5 Predictions")
-    results = []
-
+    st.subheader("Top 5 Predictions")
     for i in range(5):
-        label = imagenet_classes[top5_idx[i]]
-        prob = float(top5_prob[i].item()) * 100
-        results.append((label, f"{prob:.2f}%"))
+        st.write(f"{labels[top5_catid[i]]} : {top5_prob[i].item():.4f}")
 
-    st.table(results)
+    df = pd.DataFrame({
+        "Label": [labels[idx] for idx in top5_catid],
+        "Probability": [float(p) for p in top5_prob]
+    })
+
+    st.subheader("Prediction Table")
+    st.dataframe(df)
+
+else:
+    st.info("Click **Take a photo** to start classification.")
